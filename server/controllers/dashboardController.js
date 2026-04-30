@@ -12,7 +12,7 @@ exports.getSummary = async (req, res) => {
       "SELECT COUNT(*) AS total FROM Application WHERE status = 'Under Review'"
     );
     const [[flaggedCount]] = await pool.query(
-      'SELECT COUNT(*) AS total FROM Fraud_Check_Log WHERE fraud_flag = 1'
+      "SELECT COUNT(*) AS total FROM Fraud_Check_Log WHERE fraud_flag = 'YES'"
     );
 
     res.json({

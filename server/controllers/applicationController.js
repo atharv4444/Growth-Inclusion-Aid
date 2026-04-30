@@ -84,6 +84,7 @@ exports.getByStatus = async (req, res) => {
   try {
     const [rows] = await pool.query(`
       SELECT a.*, b.full_name, g.grant_name,
+        (SELECT f.fraud_id FROM Fraud_Check_Log f WHERE f.application_id = a.application_id ORDER BY f.checked_on DESC LIMIT 1) AS fraud_id,
         (SELECT f.risk_score FROM Fraud_Check_Log f WHERE f.application_id = a.application_id ORDER BY f.checked_on DESC LIMIT 1) AS risk_score,
         (SELECT f.fraud_flag FROM Fraud_Check_Log f WHERE f.application_id = a.application_id ORDER BY f.checked_on DESC LIMIT 1) AS fraud_flag
       FROM Application a

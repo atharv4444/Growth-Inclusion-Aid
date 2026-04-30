@@ -1,267 +1,246 @@
 import { useState, useEffect } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { BrainCircuit, MessageCircle, AlertTriangle, Shield, Clock, User, Zap } from 'lucide-react';
-import GlassCard from '../components/GlassCard';
-import { fetchChatbotQueries, fetchFraudLogs, fetchHighRisk } from '../api';
+import { motion } from 'framer-motion';
+import { AlertTriangle, Shield, ShieldCheck, Clock, Filter, User, Award, ChevronLeft, ChevronRight } from 'lucide-react';
+import { fetchFraudLogs, toggleFraudFlag } from '../api';
 
-function TimeAgo({ date }) {
-  const diff = Date.now() - new Date(date).getTime();
-  const mins = Math.floor(diff / 60000);
-  const hours = Math.floor(diff / 3600000);
-  const days = Math.floor(diff / 86400000);
-  if (mins < 1) return <span>just now</span>;
-  if (mins < 60) return <span>{mins}m ago</span>;
-  if (hours < 24) return <span>{hours}h ago</span>;
-  return <span>{days}d ago</span>;
+const ROWS_PER_PAGE = 10;
+
+/* ── Helpers ──────────────────────────────────────────────────── */
+function isFlagged(flag) {
+  if (typeof flag === 'string') return flag.toUpperCase() === 'YES';
+  return flag === 1 || flag === true;
 }
 
-function riskColor(score) {
-  if (score >= 80) return '#ef4444';
-  if (score >= 60) return '#f4a261';
-  if (score >= 40) return '#f59e0b';
-  return '#06d6a0';
+function RiskBadge({ score }) {
+  const n = Number(score) || 0;
+  if (n >= 70) return <span className="badge badge--red"><AlertTriangle size={10} /> High ({n})</span>;
+  if (n >= 40) return <span className="badge badge--gold"><Shield size={10} /> Medium ({n})</span>;
+  return <span className="badge badge--sage"><ShieldCheck size={10} /> Low ({n})</span>;
 }
 
+/* ═══════════════════════════════════════════════════════════════
+   Pagination Controls
+   ═══════════════════════════════════════════════════════════════ */
+function Pagination({ page, totalPages, onPageChange }) {
+  if (totalPages <= 1) return null;
+
+  const pages = [];
+  const range = 2;
+  for (let i = 1; i <= totalPages; i++) {
+    if (i === 1 || i === totalPages || (i >= page - range && i <= page + range)) {
+      pages.push(i);
+    } else if (pages[pages.length - 1] !== '...') {
+      pages.push('...');
+    }
+  }
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.375rem', padding: '1rem 0' }}>
+      <button
+        onClick={() => onPageChange(page - 1)}
+        disabled={page === 1}
+        style={{
+          padding: '0.375rem', borderRadius: '6px', border: '1px solid var(--border-light)',
+          background: 'var(--bg-card)', cursor: page === 1 ? 'not-allowed' : 'pointer',
+          opacity: page === 1 ? 0.4 : 1, display: 'flex', alignItems: 'center',
+        }}
+      >
+        <ChevronLeft size={16} />
+      </button>
+
+      {pages.map((p, i) =>
+        p === '...' ? (
+          <span key={`e${i}`} style={{ padding: '0 0.25rem', color: 'var(--text-tertiary)', fontSize: '0.8125rem' }}>…</span>
+        ) : (
+          <button
+            key={p}
+            onClick={() => onPageChange(p)}
+            style={{
+              minWidth: '32px', height: '32px', borderRadius: '6px', fontSize: '0.8125rem', fontWeight: 600,
+              border: '1px solid var(--border-light)', cursor: 'pointer',
+              fontFamily: 'var(--font-sans)',
+              background: p === page ? 'var(--text-primary)' : 'var(--bg-card)',
+              color: p === page ? 'var(--bg-card)' : 'var(--text-secondary)',
+              transition: 'all var(--transition-fast)',
+            }}
+          >
+            {p}
+          </button>
+        )
+      )}
+
+      <button
+        onClick={() => onPageChange(page + 1)}
+        disabled={page === totalPages}
+        style={{
+          padding: '0.375rem', borderRadius: '6px', border: '1px solid var(--border-light)',
+          background: 'var(--bg-card)', cursor: page === totalPages ? 'not-allowed' : 'pointer',
+          opacity: page === totalPages ? 0.4 : 1, display: 'flex', alignItems: 'center',
+        }}
+      >
+        <ChevronRight size={16} />
+      </button>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   Intelligence Logs — Main View
+   ═══════════════════════════════════════════════════════════════ */
 export default function IntelligenceLogs() {
-  const [queries, setQueries] = useState([]);
-  const [fraudLogs, setFraudLogs] = useState([]);
-  const [highRisk, setHighRisk] = useState([]);
-  const [activeStream, setActiveStream] = useState('all');
+  const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [filter, setFilter] = useState('all');
+  const [page, setPage] = useState(1);
+  const [toggling, setToggling] = useState(null);
 
   useEffect(() => {
-    Promise.all([fetchChatbotQueries(), fetchFraudLogs(), fetchHighRisk()])
-      .then(([q, f, h]) => {
-        setQueries(q);
-        setFraudLogs(f);
-        setHighRisk(h);
-      })
-      .catch(console.error)
+    fetchFraudLogs()
+      .then(setLogs)
+      .catch((err) => console.error('IntelligenceLogs load error:', err))
       .finally(() => setLoading(false));
   }, []);
 
-  const filters = [
-    { id: 'all', label: 'All Logs' },
-    { id: 'queries', label: 'Chatbot Queries' },
-    { id: 'fraud', label: 'Fraud Alerts' },
-    { id: 'critical', label: 'Critical Only' },
-  ];
+  /* Toggle fraud flag inline */
+  const handleToggleFlag = async (log) => {
+    const newFlag = isFlagged(log.fraud_flag) ? 'NO' : 'YES';
+    setToggling(log.fraud_id);
+    try {
+      await toggleFraudFlag(log.fraud_id, newFlag);
+      setLogs((prev) =>
+        prev.map((l) => l.fraud_id === log.fraud_id ? { ...l, fraud_flag: newFlag } : l)
+      );
+    } catch (err) {
+      console.error('Toggle flag error:', err);
+    } finally {
+      setToggling(null);
+    }
+  };
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-[60vh]">
-        <motion.div
-          animate={{ rotate: 360 }}
-          transition={{ duration: 1.5, repeat: Infinity, ease: 'linear' }}
-          className="w-10 h-10 border-2 border-accent-pink/30 border-t-accent-pink rounded-full"
-        />
-      </div>
-    );
-  }
+  const filtered = logs.filter((l) => {
+    if (filter === 'flagged') return isFlagged(l.fraud_flag);
+    if (filter === 'clean') return !isFlagged(l.fraud_flag);
+    return true;
+  });
 
-  // Build combined timeline
-  let timeline = [];
-  if (activeStream === 'all' || activeStream === 'queries') {
-    timeline.push(...queries.map(q => ({
-      type: 'query',
-      id: `q-${q.query_id}`,
-      timestamp: q.timestamp,
-      name: q.full_name || `Beneficiary #${q.beneficiary_id}`,
-      content: q.question,
-    })));
-  }
-  if (activeStream === 'all' || activeStream === 'fraud') {
-    timeline.push(...fraudLogs.map(f => ({
-      type: 'fraud',
-      id: `f-${f.fraud_id}`,
-      timestamp: f.checked_on,
-      name: f.full_name || `APP-${f.application_id}`,
-      content: f.detection_reason || 'Automated check',
-      riskScore: f.risk_score,
-      flagged: f.fraud_flag,
-      grantName: f.grant_name,
-    })));
-  }
-  if (activeStream === 'critical') {
-    timeline = highRisk.map(f => ({
-      type: 'fraud',
-      id: `h-${f.fraud_id}`,
-      timestamp: f.checked_on,
-      name: f.full_name || `APP-${f.application_id}`,
-      content: f.detection_reason || 'High risk detected',
-      riskScore: f.risk_score,
-      flagged: f.fraud_flag,
-      grantName: f.grant_name,
-    }));
-  }
+  /* Reset to page 1 when filter changes */
+  useEffect(() => { setPage(1); }, [filter]);
 
-  timeline.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+  const totalPages = Math.max(1, Math.ceil(filtered.length / ROWS_PER_PAGE));
+  const paginated = filtered.slice((page - 1) * ROWS_PER_PAGE, page * ROWS_PER_PAGE);
+  const flaggedCount = logs.filter((l) => isFlagged(l.fraud_flag)).length;
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <motion.div initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }}>
-        <h1 className="text-3xl font-bold tracking-tight bg-gradient-to-r from-text-primary to-text-secondary bg-clip-text text-transparent">
-          Intelligence & Logs
-        </h1>
-        <p className="text-text-muted text-sm mt-1 flex items-center gap-2">
-          <BrainCircuit size={14} className="text-accent-pink" />
-          Real-time event stream & threat intelligence
-        </p>
+    <section id="intelligence-logs">
+      <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4 }} style={{ marginBottom: '1.5rem' }}>
+        <h1 className="heading-xl">Intelligence &amp; Logs</h1>
+        <p className="text-body" style={{ marginTop: '0.375rem' }}>Automated fraud detection and administrative event stream</p>
       </motion.div>
 
-      {/* High Risk Summary */}
-      {highRisk.length > 0 && (
-        <GlassCard glow="red" delay={0.1}>
-          <div className="p-5">
-            <div className="flex items-center gap-3 mb-4">
-              <div className="w-10 h-10 rounded-xl bg-accent-red/15 flex items-center justify-center">
-                <Shield size={20} className="text-accent-red" />
-              </div>
-              <div>
-                <h3 className="text-sm font-semibold text-accent-red">⚠ Active Threat Summary</h3>
-                <p className="text-xs text-text-muted">{highRisk.length} high-risk items require attention</p>
-              </div>
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-              {highRisk.slice(0, 6).map((item, i) => (
-                <motion.div
-                  key={item.fraud_id}
-                  initial={{ opacity: 0, x: -10 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  transition={{ delay: 0.2 + i * 0.05 }}
-                  className="glass rounded-xl p-3 border-l-2"
-                  style={{
-                    borderLeftColor: riskColor(item.risk_score),
-                    boxShadow: `0 0 15px ${riskColor(item.risk_score)}15`,
-                  }}
-                >
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="text-xs font-semibold text-text-primary">{item.full_name || `APP-${item.application_id}`}</span>
-                    <span
-                      className="text-xs font-bold px-1.5 py-0.5 rounded"
-                      style={{ backgroundColor: `${riskColor(item.risk_score)}20`, color: riskColor(item.risk_score) }}
-                    >
-                      {item.risk_score}%
-                    </span>
-                  </div>
-                  <p className="text-[11px] text-text-muted truncate">{item.detection_reason || 'Risk threshold exceeded'}</p>
-                </motion.div>
-              ))}
-            </div>
+      {/* ── Summary & Filter ─────────────────────────────────── */}
+      <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4, delay: 0.1 }}
+        style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.25rem', flexWrap: 'wrap', gap: '0.75rem' }}>
+        <div style={{ display: 'flex', gap: '1rem' }}>
+          <div className="card" style={{ padding: '0.625rem 1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <span className="text-caption">Total Logs</span>
+            <span style={{ fontWeight: 700, fontFamily: 'var(--font-serif)', fontSize: '1rem' }}>{logs.length}</span>
           </div>
-        </GlassCard>
-      )}
-
-      {/* Stream Filters */}
-      <div className="flex gap-2 flex-wrap">
-        {filters.map((f) => (
-          <motion.button
-            key={f.id}
-            onClick={() => setActiveStream(f.id)}
-            whileHover={{ y: -2 }}
-            whileTap={{ scale: 0.97 }}
-            className={`px-4 py-2 rounded-xl text-xs font-medium transition-all duration-300 border ${
-              activeStream === f.id
-                ? 'bg-white/8 border-white/15 text-text-primary'
-                : 'bg-white/2 border-white/6 text-text-muted hover:bg-white/5'
-            }`}
-          >
-            {f.label}
-            {f.id === 'critical' && highRisk.length > 0 && (
-              <span className="ml-1.5 w-2 h-2 rounded-full bg-accent-red inline-block pulse-live" />
-            )}
-          </motion.button>
-        ))}
-      </div>
-
-      {/* Event Stream */}
-      <div className="space-y-3">
-        <AnimatePresence mode="popLayout">
-          {timeline.slice(0, 50).map((item, i) => (
-            <motion.div
-              key={item.id}
-              layout
-              initial={{ opacity: 0, y: 20, scale: 0.97 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              transition={{ duration: 0.35, delay: i * 0.02 }}
-              className={`glass rounded-xl p-4 flex items-start gap-4 ${
-                item.type === 'fraud' && item.riskScore >= 70
-                  ? 'border-l-2 border-l-accent-red glow-red'
-                  : item.type === 'fraud'
-                  ? 'border-l-2 border-l-accent-amber'
-                  : ''
-              }`}
-            >
-              {/* Icon */}
-              <div
-                className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0 mt-0.5"
-                style={{
-                  backgroundColor: item.type === 'fraud'
-                    ? `${riskColor(item.riskScore)}15`
-                    : '#4cc9f015',
-                }}
-              >
-                {item.type === 'fraud' ? (
-                  <AlertTriangle size={16} style={{ color: riskColor(item.riskScore) }} />
-                ) : (
-                  <MessageCircle size={16} className="text-accent-blue" />
-                )}
-              </div>
-
-              {/* Content */}
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span className="text-sm font-semibold text-text-primary">{item.name}</span>
-                  {item.type === 'fraud' && (
-                    <span
-                      className="text-[10px] font-bold px-1.5 py-0.5 rounded"
-                      style={{
-                        backgroundColor: `${riskColor(item.riskScore)}20`,
-                        color: riskColor(item.riskScore),
-                      }}
-                    >
-                      RISK {item.riskScore}%
-                    </span>
-                  )}
-                  {item.type === 'fraud' && item.flagged === 1 && (
-                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-accent-red/20 text-accent-red">
-                      FLAGGED
-                    </span>
-                  )}
-                  {item.type === 'query' && (
-                    <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-accent-blue/15 text-accent-blue">
-                      QUERY
-                    </span>
-                  )}
-                </div>
-                <p className="text-xs text-text-secondary mt-1 leading-relaxed">{item.content}</p>
-                {item.grantName && (
-                  <p className="text-[11px] text-text-muted mt-1">Grant: {item.grantName}</p>
-                )}
-              </div>
-
-              {/* Timestamp */}
-              <div className="flex items-center gap-1 text-xs text-text-muted shrink-0">
-                <Clock size={11} />
-                <TimeAgo date={item.timestamp} />
-              </div>
-            </motion.div>
+          <div className="card" style={{ padding: '0.625rem 1rem', display: 'flex', alignItems: 'center', gap: '0.5rem', background: flaggedCount > 0 ? 'var(--accent-red-light)' : undefined }}>
+            <AlertTriangle size={14} style={{ color: 'var(--accent-red)' }} />
+            <span className="text-caption">Flagged</span>
+            <span style={{ fontWeight: 700, fontFamily: 'var(--font-serif)', fontSize: '1rem', color: 'var(--accent-red)' }}>{flaggedCount}</span>
+          </div>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          <Filter size={14} style={{ color: 'var(--text-tertiary)' }} />
+          {['all', 'flagged', 'clean'].map((f) => (
+            <button key={f} id={`filter-${f}`} onClick={() => setFilter(f)}
+              style={{
+                padding: '0.375rem 0.75rem', borderRadius: '6px', border: '1px solid var(--border-light)',
+                background: filter === f ? 'var(--text-primary)' : 'var(--bg-card)',
+                color: filter === f ? 'var(--bg-card)' : 'var(--text-secondary)',
+                fontFamily: 'var(--font-sans)', fontSize: '0.75rem', fontWeight: 600,
+                cursor: 'pointer', transition: 'all var(--transition-fast)', textTransform: 'capitalize',
+              }}
+            >{f}</button>
           ))}
-        </AnimatePresence>
+        </div>
+      </motion.div>
 
-        {timeline.length === 0 && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            className="text-center py-20"
-          >
-            <Zap size={48} className="mx-auto text-text-muted/30 mb-4" />
-            <p className="text-text-muted">No events in this stream</p>
-          </motion.div>
+      {/* ── Table ────────────────────────────────────────────── */}
+      <motion.div className="card card-elevated" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5, delay: 0.15 }} style={{ overflow: 'hidden' }}>
+        {loading ? (
+          <div style={{ padding: '3rem', textAlign: 'center' }}><span className="text-body" style={{ color: 'var(--text-tertiary)' }}>Loading logs…</span></div>
+        ) : filtered.length === 0 ? (
+          <div style={{ padding: '3rem', textAlign: 'center' }}><span className="text-body" style={{ color: 'var(--text-tertiary)' }}>No logs match this filter.</span></div>
+        ) : (
+          <>
+            <div style={{ overflowX: 'auto' }}>
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Beneficiary</th>
+                    <th>Grant</th>
+                    <th>Risk Score</th>
+                    <th>Status</th>
+                    <th>Reason</th>
+                    <th>Date</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {paginated.map((log) => {
+                    const flagged = isFlagged(log.fraud_flag);
+                    const riskScore = Number(log.risk_score) || 0;
+                    return (
+                      <tr key={log.fraud_id} id={`log-row-${log.fraud_id}`}
+                        style={{ background: flagged && riskScore >= 60 ? 'var(--accent-terracotta-light)' : undefined }}>
+                        <td style={{ fontWeight: 500 }}>#{log.fraud_id}</td>
+                        <td><span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.375rem' }}><User size={13} style={{ color: 'var(--text-tertiary)' }} />{log.full_name || `App #${log.application_id}`}</span></td>
+                        <td><span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.375rem' }}><Award size={13} style={{ color: 'var(--text-tertiary)' }} />{log.grant_name || '—'}</span></td>
+                        <td><RiskBadge score={log.risk_score} /></td>
+                        <td>{flagged ? <span className="badge badge--red"><AlertTriangle size={10} /> Flagged</span> : <span className="badge badge--sage"><ShieldCheck size={10} /> Clear</span>}</td>
+                        <td style={{ maxWidth: '180px', fontSize: '0.8125rem', color: 'var(--text-secondary)' }}>{log.detection_reason || '—'}</td>
+                        <td>
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.375rem', whiteSpace: 'nowrap' }}>
+                            <Clock size={12} style={{ color: 'var(--text-tertiary)' }} />
+                            {log.checked_on ? new Date(log.checked_on).toLocaleDateString('en-IN', { month: 'short', day: 'numeric', year: 'numeric' }) : '—'}
+                          </span>
+                        </td>
+                        <td>
+                          <button
+                            onClick={() => handleToggleFlag(log)}
+                            disabled={toggling === log.fraud_id}
+                            style={{
+                              padding: '0.3rem 0.6rem', borderRadius: '5px', fontSize: '0.6875rem', fontWeight: 600,
+                              border: 'none', cursor: toggling === log.fraud_id ? 'wait' : 'pointer',
+                              fontFamily: 'var(--font-sans)',
+                              background: flagged ? 'var(--accent-sage-light)' : 'var(--accent-red-light)',
+                              color: flagged ? 'var(--accent-sage)' : 'var(--accent-red)',
+                              transition: 'all var(--transition-fast)', opacity: toggling === log.fraud_id ? 0.5 : 1,
+                            }}
+                          >
+                            {flagged ? 'Unflag' : 'Flag'}
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Pagination */}
+            <div style={{ borderTop: '1px solid var(--border-light)', padding: '0 1rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <span className="text-caption">
+                Showing {(page - 1) * ROWS_PER_PAGE + 1}–{Math.min(page * ROWS_PER_PAGE, filtered.length)} of {filtered.length}
+              </span>
+              <Pagination page={page} totalPages={totalPages} onPageChange={setPage} />
+            </div>
+          </>
         )}
-      </div>
-    </div>
+      </motion.div>
+    </section>
   );
 }

@@ -1,241 +1,308 @@
 import { useState, useEffect } from 'react';
-import { motion } from 'framer-motion';
-import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, Legend,
-} from 'recharts';
-import { Landmark, Wallet, ArrowUpRight, TrendingUp, CreditCard, FileText } from 'lucide-react';
-import GlassCard from '../components/GlassCard';
-import { fetchGrants, fetchPayments, fetchProjectedVsActual } from '../api';
+import { motion, AnimatePresence } from 'framer-motion';
+import { Wallet, Calendar, Users, CheckCircle, FileText, Plus, X } from 'lucide-react';
+import { fetchGrants, createGrant } from '../api';
 
-function ProgressBar({ value, max, color }) {
-  const pct = max > 0 ? Math.min((value / max) * 100, 100) : 0;
+/* ── Shared form styles ──────────────────────────────────────── */
+const panelBase = {
+  position: 'fixed', top: 0, right: 0, width: '420px', height: '100vh',
+  background: 'var(--bg-card)', borderLeft: '1px solid var(--border-light)',
+  boxShadow: '-4px 0 24px rgba(26,24,22,0.08)', zIndex: 100,
+  padding: '2rem', overflowY: 'auto',
+};
+const inputStyle = {
+  width: '100%', padding: '0.5rem 0.75rem', borderRadius: '6px',
+  border: '1px solid var(--border-light)', fontFamily: 'var(--font-sans)',
+  fontSize: '0.875rem', color: 'var(--text-primary)', background: 'var(--bg-card)', outline: 'none',
+};
+const labelStyle = { display: 'block', marginBottom: '0.25rem', fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)' };
+const fieldGap = { marginBottom: '0.875rem' };
+const btnPrimary = {
+  width: '100%', padding: '0.625rem', borderRadius: '6px', border: 'none',
+  background: 'var(--text-primary)', color: '#fff', fontFamily: 'var(--font-sans)',
+  fontSize: '0.875rem', fontWeight: 600, cursor: 'pointer',
+};
+
+/* ═══════════════════════════════════════════════════════════════
+   Add Grant Panel
+   ═══════════════════════════════════════════════════════════════ */
+function AddGrantPanel({ onClose, onCreated }) {
+  const [form, setForm] = useState({ grant_name: '', description: '', eligibility_criteria: '', max_amount: '' });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const set = (k, v) => setForm((p) => ({ ...p, [k]: v }));
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!form.grant_name || !form.max_amount) { setError('Name and Max Amount are required'); return; }
+    setSaving(true); setError('');
+    try {
+      await createGrant({ ...form, max_amount: Number(form.max_amount) });
+      onCreated();
+      onClose();
+    } catch (err) {
+      setError(err.response?.data?.error || 'Failed to create grant');
+    } finally { setSaving(false); }
+  };
+
   return (
-    <div className="w-full h-2 rounded-full bg-white/5 overflow-hidden">
-      <motion.div
-        initial={{ width: 0 }}
-        animate={{ width: `${pct}%` }}
-        transition={{ duration: 1.2, ease: [0.22, 1, 0.36, 1] }}
-        className="h-full rounded-full"
-        style={{ backgroundColor: color }}
-      />
-    </div>
+    <motion.div key="add-grant" initial={{ opacity: 0, x: 24 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 24 }} transition={{ duration: 0.3 }} style={panelBase}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
+        <h2 className="heading-lg">New Grant Program</h2>
+        <button onClick={onClose} style={{ background: 'var(--bg-muted)', border: 'none', borderRadius: '6px', width: '32px', height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: 'var(--text-secondary)' }}><X size={16} /></button>
+      </div>
+      {error && <div style={{ padding: '0.5rem 0.75rem', borderRadius: '6px', background: 'var(--accent-red-light)', color: 'var(--accent-red)', fontSize: '0.8125rem', marginBottom: '1rem' }}>{error}</div>}
+      <form onSubmit={handleSubmit}>
+        <div style={fieldGap}><label style={labelStyle}>Grant Name *</label><input style={inputStyle} value={form.grant_name} onChange={(e) => set('grant_name', e.target.value)} placeholder="e.g. Rural Housing Aid" /></div>
+        <div style={fieldGap}><label style={labelStyle}>Description</label><textarea style={{ ...inputStyle, minHeight: '70px', resize: 'vertical' }} value={form.description} onChange={(e) => set('description', e.target.value)} placeholder="Brief description of the program…" /></div>
+        <div style={fieldGap}><label style={labelStyle}>Eligibility Criteria</label><textarea style={{ ...inputStyle, minHeight: '60px', resize: 'vertical' }} value={form.eligibility_criteria} onChange={(e) => set('eligibility_criteria', e.target.value)} placeholder="e.g. BPL card holder, age 18+" /></div>
+        <div style={fieldGap}><label style={labelStyle}>Max Amount per Person (₹) *</label><input type="number" style={inputStyle} value={form.max_amount} onChange={(e) => set('max_amount', e.target.value)} placeholder="50000" /></div>
+        <button type="submit" disabled={saving} style={{ ...btnPrimary, opacity: saving ? 0.6 : 1 }}>{saving ? 'Creating…' : 'Create Grant Program'}</button>
+      </form>
+    </motion.div>
   );
 }
 
-function CustomTooltip({ active, payload, label }) {
-  if (!active || !payload?.length) return null;
+/* ═══════════════════════════════════════════════════════════════
+   Grant Card — uses fields returned by GET /api/grants:
+     grant_name, description, eligibility_criteria, max_amount,
+     total_applications, approved_count, total_disbursed
+   ═══════════════════════════════════════════════════════════════ */
+function GrantCard({ grant, delay }) {
+  const maxAmt = Number(grant.max_amount || 0);
+  const totalApps = Number(grant.total_applications || 0);
+  const approved = Number(grant.approved_count || 0);
+  const disbursed = Number(grant.total_disbursed || 0);
+
+  /* Budget estimate = max_amount × approved applications */
+  const estimatedBudget = maxAmt * (approved || 1);
+  const pct = estimatedBudget > 0 ? Math.min((disbursed / estimatedBudget) * 100, 100) : 0;
+
+  const barColor =
+    pct >= 90
+      ? 'var(--accent-red)'
+      : pct >= 60
+        ? 'var(--accent-gold)'
+        : 'var(--accent-sage)';
+
   return (
-    <div className="glass-elevated px-4 py-3 text-sm">
-      <p className="text-text-primary font-semibold mb-1">{label}</p>
-      {payload.map((p, i) => (
-        <p key={i} className="text-text-secondary">
-          <span style={{ color: p.fill || p.color }}>●</span> {p.name}: ₹{Number(p.value).toLocaleString('en-IN')}
-        </p>
-      ))}
-    </div>
+    <motion.div
+      className="card card-elevated"
+      initial={{ opacity: 0, y: 16 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.45, delay }}
+      style={{ padding: '1.5rem' }}
+    >
+      {/* Header */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.75rem' }}>
+        <div>
+          <h3 className="heading-md">{grant.grant_name}</h3>
+          <div className="text-caption" style={{ marginTop: '0.25rem', maxWidth: '260px' }}>
+            {grant.description || 'No description'}
+          </div>
+        </div>
+        <div
+          style={{
+            width: '40px',
+            height: '40px',
+            borderRadius: '8px',
+            background: 'var(--accent-gold-light)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            color: 'var(--accent-gold)',
+            flexShrink: 0,
+          }}
+        >
+          <Wallet size={18} />
+        </div>
+      </div>
+
+      {/* Eligibility */}
+      <div
+        style={{
+          fontSize: '0.75rem',
+          color: 'var(--text-tertiary)',
+          padding: '0.5rem 0.75rem',
+          background: 'var(--bg-muted)',
+          borderRadius: '4px',
+          marginBottom: '1rem',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '0.375rem',
+        }}
+      >
+        <FileText size={12} />
+        {grant.eligibility_criteria || 'N/A'}
+      </div>
+
+      {/* Stats Grid */}
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: '1fr 1fr 1fr',
+          gap: '0.75rem',
+          marginBottom: '1.25rem',
+        }}
+      >
+        <div style={{ textAlign: 'center', padding: '0.625rem', background: 'var(--bg-muted)', borderRadius: '6px' }}>
+          <div className="text-caption" style={{ marginBottom: '0.25rem' }}>Max / Person</div>
+          <div style={{ fontFamily: 'var(--font-serif)', fontWeight: 700, fontSize: '1rem' }}>
+            ₹{maxAmt.toLocaleString('en-IN')}
+          </div>
+        </div>
+        <div style={{ textAlign: 'center', padding: '0.625rem', background: 'var(--bg-muted)', borderRadius: '6px' }}>
+          <div className="text-caption" style={{ marginBottom: '0.25rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.25rem' }}>
+            <Users size={11} /> Applications
+          </div>
+          <div style={{ fontFamily: 'var(--font-serif)', fontWeight: 700, fontSize: '1rem' }}>
+            {totalApps}
+          </div>
+        </div>
+        <div style={{ textAlign: 'center', padding: '0.625rem', background: 'var(--accent-sage-light)', borderRadius: '6px' }}>
+          <div className="text-caption" style={{ marginBottom: '0.25rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.25rem' }}>
+            <CheckCircle size={11} /> Approved
+          </div>
+          <div style={{ fontFamily: 'var(--font-serif)', fontWeight: 700, fontSize: '1rem', color: 'var(--accent-sage)' }}>
+            {approved}
+          </div>
+        </div>
+      </div>
+
+      {/* Disbursement Progress */}
+      <div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+          <span className="text-caption">Disbursed vs Allocated Budget</span>
+          <span style={{ fontWeight: 600, fontSize: '0.75rem', color: barColor }}>
+            {pct.toFixed(1)}%
+          </span>
+        </div>
+        <div className="progress-track">
+          <motion.div
+            className="progress-fill"
+            initial={{ width: 0 }}
+            animate={{ width: `${pct}%` }}
+            transition={{ duration: 0.8, delay: delay + 0.2 }}
+            style={{ background: barColor }}
+          />
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '0.375rem' }}>
+          <span className="text-caption">₹{disbursed.toLocaleString('en-IN')} disbursed</span>
+          <span className="text-caption">₹{estimatedBudget.toLocaleString('en-IN')} allocated</span>
+        </div>
+      </div>
+    </motion.div>
   );
 }
 
+/* ═══════════════════════════════════════════════════════════════
+   Grant Finance Hub — Main View
+   ═══════════════════════════════════════════════════════════════ */
 export default function GrantFinanceHub() {
   const [grants, setGrants] = useState([]);
-  const [payments, setPayments] = useState([]);
-  const [barData, setBarData] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
 
+  const reload = () => { fetchGrants().then(setGrants).catch(console.error); };
   useEffect(() => {
-    Promise.all([fetchGrants(), fetchPayments(), fetchProjectedVsActual()])
-      .then(([g, p, pva]) => {
-        setGrants(g);
-        setPayments(p);
-        setBarData(pva);
-      })
-      .catch(console.error)
+    fetchGrants()
+      .then(setGrants)
+      .catch((err) => console.error('GrantFinanceHub load error:', err))
       .finally(() => setLoading(false));
   }, []);
 
-  const totalProjected = barData.reduce((s, d) => s + Number(d.projected || 0), 0);
-  const totalActual = barData.reduce((s, d) => s + Number(d.actual || 0), 0);
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-[60vh]">
-        <motion.div
-          animate={{ rotate: 360 }}
-          transition={{ duration: 1.5, repeat: Infinity, ease: 'linear' }}
-          className="w-10 h-10 border-2 border-accent-amber/30 border-t-accent-amber rounded-full"
-        />
-      </div>
-    );
-  }
+  /* Summary stats */
+  const totalDisbursed = grants.reduce((s, g) => s + Number(g.total_disbursed || 0), 0);
+  const totalApproved = grants.reduce((s, g) => s + Number(g.approved_count || 0), 0);
 
   return (
-    <div className="space-y-10 pb-20">
-      {/* Header */}
-      <motion.div initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }}>
-        <h1 className="text-3xl font-bold tracking-tight bg-gradient-to-r from-text-primary to-text-secondary bg-clip-text text-transparent">
-          Grant & Finance Hub
-        </h1>
-        <p className="text-text-muted text-sm mt-1 flex items-center gap-2">
-          <Landmark size={14} className="text-accent-amber" />
-          Program funding & payment tracking
-        </p>
+    <section id="grant-finance-hub">
+      {/* ── Header ─────────────────────────────────────────────── */}
+      <motion.div
+        initial={{ opacity: 0, y: -8 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.4 }}
+        style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '0.75rem' }}
+      >
+        <div>
+          <h1 className="heading-xl">Grant &amp; Finance Hub</h1>
+          <p className="text-body" style={{ marginTop: '0.375rem' }}>Track funding capacity and disbursement progress</p>
+        </div>
+        <button id="add-grant-btn" onClick={() => setShowForm(true)}
+          style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.5rem 1rem', borderRadius: '6px', border: 'none', background: 'var(--text-primary)', color: '#fff', fontFamily: 'var(--font-sans)', fontSize: '0.8125rem', fontWeight: 600, cursor: 'pointer' }}>
+          <Plus size={15} /> Add Grant
+        </button>
       </motion.div>
 
-      {/* Quick Stats */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <GlassCard glow="amber" delay={0}>
-          <div className="p-8 flex items-center gap-4">
-            <div className="w-11 h-11 rounded-xl bg-accent-amber/15 flex items-center justify-center">
-              <FileText size={20} className="text-accent-amber" />
-            </div>
+      {/* ── Summary Row ─────────────────────────────────────────── */}
+      {!loading && (
+        <motion.div
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.4, delay: 0.05 }}
+          style={{ display: 'flex', gap: '1rem', marginBottom: '1.5rem', flexWrap: 'wrap' }}
+        >
+          <div className="card" style={{ padding: '0.75rem 1.25rem', display: 'flex', alignItems: 'center', gap: '0.625rem' }}>
+            <Wallet size={16} style={{ color: 'var(--accent-gold)' }} />
             <div>
-              <p className="text-xs text-text-muted uppercase tracking-wider">Grant Programs</p>
-              <p className="text-2xl font-bold text-accent-amber">{grants.length}</p>
-            </div>
-          </div>
-        </GlassCard>
-        <GlassCard glow="cyan" delay={0.08}>
-          <div className="p-8 flex items-center gap-4">
-            <div className="w-11 h-11 rounded-xl bg-accent-cyan/15 flex items-center justify-center">
-              <Wallet size={20} className="text-accent-cyan" />
-            </div>
-            <div>
-              <p className="text-xs text-text-muted uppercase tracking-wider">Projected Aid</p>
-              <p className="text-2xl font-bold text-accent-cyan">₹{totalProjected.toLocaleString('en-IN')}</p>
-            </div>
-          </div>
-        </GlassCard>
-        <GlassCard glow="blue" delay={0.16}>
-          <div className="p-8 flex items-center gap-4">
-            <div className="w-11 h-11 rounded-xl bg-accent-blue/15 flex items-center justify-center">
-              <CreditCard size={20} className="text-accent-blue" />
-            </div>
-            <div>
-              <p className="text-xs text-text-muted uppercase tracking-wider">Actual Disbursed</p>
-              <p className="text-2xl font-bold text-accent-blue">₹{totalActual.toLocaleString('en-IN')}</p>
-            </div>
-          </div>
-        </GlassCard>
-      </div>
-
-      {/* Bar Chart */}
-      <GlassCard glow="amber" delay={0.2}>
-        <div className="p-8">
-          <h3 className="text-sm font-semibold text-text-primary mb-1">Projected Aid vs Actual Paid</h3>
-          <p className="text-xs text-text-muted mb-4">Comparison across all grant programs</p>
-          <div className="h-[300px]">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={barData} barGap={4} barCategoryGap="25%">
-                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
-                <XAxis dataKey="name" stroke="#6b7280" fontSize={11} tickLine={false} axisLine={false} angle={-15} textAnchor="end" height={50} />
-                <YAxis stroke="#6b7280" fontSize={11} tickLine={false} axisLine={false} tickFormatter={v => `₹${(v / 1000).toFixed(0)}k`} />
-                <Tooltip content={<CustomTooltip />} />
-                <Legend
-                  iconType="circle" iconSize={8}
-                  formatter={(v) => <span className="text-text-secondary text-xs ml-1">{v}</span>}
-                />
-                <Bar dataKey="projected" name="Projected" fill="#7b68ee" radius={[6, 6, 0, 0]} fillOpacity={0.7} />
-                <Bar dataKey="actual" name="Actual Paid" fill="#06d6a0" radius={[6, 6, 0, 0]} fillOpacity={0.8} />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-      </GlassCard>
-
-      {/* Grant Program Cards */}
-      <div>
-        <h3 className="text-lg font-semibold text-text-primary mb-4">Grant Programs</h3>
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-          {grants.map((g, i) => (
-            <GlassCard key={g.grant_id} glow="purple" delay={0.3 + i * 0.06} className="group/grant">
-              <div className="p-8">
-                <div className="flex items-start justify-between mb-3">
-                  <div>
-                    <h4 className="text-sm font-semibold text-text-primary">{g.grant_name}</h4>
-                    <p className="text-xs text-text-muted mt-1 line-clamp-2">{g.description || 'No description'}</p>
-                  </div>
-                  <div className="text-xs text-accent-amber font-bold whitespace-nowrap">
-                    ₹{Number(g.max_amount || 0).toLocaleString('en-IN')}
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-4 text-xs text-text-muted mb-3">
-                  <span>{g.total_applications || 0} applications</span>
-                  <span>{g.approved_count || 0} approved</span>
-                </div>
-
-                {/* Disbursement progress - visible on hover */}
-                <div className="max-h-0 overflow-hidden opacity-0 group-hover/grant:max-h-[80px] group-hover/grant:opacity-100 transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]">
-                  <div className="h-px bg-gradient-to-r from-transparent via-white/10 to-transparent mb-3" />
-                  <div className="flex justify-between text-xs mb-1.5">
-                    <span className="text-text-muted">Disbursed</span>
-                    <span className="text-accent-cyan font-medium">
-                      ₹{Number(g.total_disbursed || 0).toLocaleString('en-IN')}
-                    </span>
-                  </div>
-                  <ProgressBar
-                    value={Number(g.total_disbursed || 0)}
-                    max={Number(g.max_amount || 1) * (g.approved_count || 1)}
-                    color="#06d6a0"
-                  />
-                </div>
+              <div className="text-caption">Total Disbursed</div>
+              <div style={{ fontFamily: 'var(--font-serif)', fontWeight: 700, fontSize: '1.125rem' }}>
+                ₹{totalDisbursed.toLocaleString('en-IN')}
               </div>
-            </GlassCard>
+            </div>
+          </div>
+          <div className="card" style={{ padding: '0.75rem 1.25rem', display: 'flex', alignItems: 'center', gap: '0.625rem' }}>
+            <CheckCircle size={16} style={{ color: 'var(--accent-sage)' }} />
+            <div>
+              <div className="text-caption">Total Approved</div>
+              <div style={{ fontFamily: 'var(--font-serif)', fontWeight: 700, fontSize: '1.125rem' }}>
+                {totalApproved} applications
+              </div>
+            </div>
+          </div>
+          <div className="card" style={{ padding: '0.75rem 1.25rem', display: 'flex', alignItems: 'center', gap: '0.625rem' }}>
+            <FileText size={16} style={{ color: 'var(--accent-blue)' }} />
+            <div>
+              <div className="text-caption">Active Programs</div>
+              <div style={{ fontFamily: 'var(--font-serif)', fontWeight: 700, fontSize: '1.125rem' }}>
+                {grants.length}
+              </div>
+            </div>
+          </div>
+        </motion.div>
+      )}
+
+      {loading ? (
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '40vh' }}>
+          <span className="text-body" style={{ color: 'var(--text-tertiary)' }}>Loading grants…</span>
+        </div>
+      ) : grants.length === 0 ? (
+        <div className="card" style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-tertiary)' }}>
+          No grant programs found.
+        </div>
+      ) : (
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fill, minmax(360px, 1fr))',
+            gap: '1.25rem',
+          }}
+        >
+          {grants.map((g, i) => (
+            <GrantCard key={g.grant_id || i} grant={g} delay={i * 0.06} />
           ))}
         </div>
-      </div>
+      )}
 
-      {/* Recent Payments */}
-      <GlassCard delay={0.5} hover={false}>
-        <div className="p-8">
-          <h3 className="text-sm font-semibold text-text-primary mb-4">Recent Payments</h3>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-text-muted text-xs border-b border-white/6">
-                  <th className="text-left py-2 font-medium">Beneficiary</th>
-                  <th className="text-left py-2 font-medium">Grant</th>
-                  <th className="text-right py-2 font-medium">Amount</th>
-                  <th className="text-right py-2 font-medium">Date</th>
-                  <th className="text-right py-2 font-medium">Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {payments.slice(0, 10).map((p) => (
-                  <motion.tr
-                    key={p.payment_id}
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    className="border-b border-white/4 hover:bg-white/3 transition-colors"
-                  >
-                    <td className="py-3 text-text-primary">{p.full_name || 'N/A'}</td>
-                    <td className="py-3 text-text-secondary">{p.grant_name || 'N/A'}</td>
-                    <td className="py-3 text-right text-accent-cyan font-medium">₹{Number(p.amount || 0).toLocaleString('en-IN')}</td>
-                    <td className="py-3 text-right text-text-muted">
-                      {p.payment_date ? new Date(p.payment_date).toLocaleDateString('en-IN') : 'N/A'}
-                    </td>
-                    <td className="py-3 text-right">
-                      <span
-                        className="status-badge"
-                        style={{
-                          backgroundColor: p.payment_status === 'Completed' ? '#06d6a015' : '#f4a26115',
-                          color: p.payment_status === 'Completed' ? '#06d6a0' : '#f4a261',
-                        }}
-                      >
-                        {p.payment_status || 'Pending'}
-                      </span>
-                    </td>
-                  </motion.tr>
-                ))}
-              </tbody>
-            </table>
-            {payments.length === 0 && (
-              <p className="text-text-muted text-center py-8">No payment records</p>
-            )}
-          </div>
-        </div>
-      </GlassCard>
-    </div>
+      {/* ── Add Grant Panel ────────────────────────────────────── */}
+      <AnimatePresence>
+        {showForm && (
+          <>
+            <div onClick={() => setShowForm(false)} style={{ position: 'fixed', inset: 0, background: 'rgba(26,24,22,0.18)', zIndex: 90 }} />
+            <AddGrantPanel onClose={() => setShowForm(false)} onCreated={reload} />
+          </>
+        )}
+      </AnimatePresence>
+    </section>
   );
 }
